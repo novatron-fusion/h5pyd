@@ -43,6 +43,7 @@ else:
     from .utillib import load_file, load_h5image
 
 from urllib.parse import urlparse
+import time
 
 cfg = Config()
 
@@ -329,7 +330,14 @@ def main():
                     "no_checks": cfg["no_checks"],
                     "thread_count": int(cfg["thread_count"]),
                 }
+                # save the current os time
+
+                start_time = time.time()
                 load_file(fin, fout, **kwargs)
+                end_time = time.time()
+                elapsed_time = end_time - start_time
+                logging.info(f"load_file completed in {elapsed_time:.2f} seconds")
+                print(f"load_file completed in {elapsed_time:.2f} seconds")
 
             msg = f"File {src_file} uploaded to domain: {tgt}"
             logging.info(msg)

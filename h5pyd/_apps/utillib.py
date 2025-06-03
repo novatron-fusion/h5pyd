@@ -1880,18 +1880,24 @@ def load_file(
         else:
             logging.error(f"no handler for object class: {type(obj)}")
 
-    def _visit_in_parallell(func):
+    def _visit_in_parallell(func, total=None, desc="Progress"):
         logging.info("in parallell...")
         jobs = []
 
         def _add_to_jobs(name, obj):
             jobs.append((name, obj))
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=thread_count) as executor:
-            fin.visititems(_add_to_jobs)
-            futures = [executor.submit(func, item[0], item[1]) for item in jobs]
+        fin.visititems(_add_to_jobs)
+        if total is None:
+            total = len(jobs)
+        completed = 0
 
+        with concurrent.futures.ThreadPoolExecutor(max_workers=thread_count) as executor:
+            futures = [executor.submit(func, name, obj) for name, obj in jobs]
             for future in concurrent.futures.as_completed(futures):
+                completed += 1
+                percent = (completed / total) * 100
+                print(f"{desc} {completed}/{total} ({percent:.1f}%)")
                 try:
                     future.result()
                 except Exception as e:
@@ -1903,23 +1909,58 @@ def load_file(
     # create soft/external links (and hardlinks not already created)
     logging.info("creating target objects and attributes")
 
+
+    # Get all item names for progress reporting
+    all_names = get_all_item_names(fin)
+    total_items = len(all_names)
+    progress = {"count": 0}
+
+    def progress_wrapper(func):
+        def wrapper(name, obj):
+            progress["count"] += 1
+            percent = (progress["count"] / total_items) * 100
+            print(f"Creating objects {progress['count']}/{total_items} ({percent:.1f}%)")
+            func(name, obj)
+        return wrapper
+
     # build a rough map of the file using the internal function above
     logging.info("creating target objects")
-    fin.visititems(object_create_helper)
+    print("Creating objects...")
+    fin.visititems(progress_wrapper(object_create_helper))
+
+    # get all attributes and links
+    all_attrs = get_all_attribute_pairs(fin)
+    total_attrs = len(all_attrs)
+
 
     # copy over any attributes
     logging.info("creating target attributes")
-    _visit_in_parallell(copy_attribute_helper)
+    print
+    _visit_in_parallell(copy_attribute_helper, total=total_attrs, desc="Copying attribute")
 
     # create soft/external links (and hardlinks not already created)
+
     create_links(fin, fout, ctx)  # create root soft/external links
 
-    _visit_in_parallell(object_link_helper)
+    all_links = get_all_link_names(fin)
+    total_links = len(all_links)
 
+    logging.info("creating links")
+    print("Creating links...")
+    _visit_in_parallell(object_link_helper, total=total_links, desc="Creating link")
+
+
+    # get all datasets/tables
+    all_datasets = get_all_dataset_names(fin)
+    total_datasets = len(all_datasets)
+
+    # create datasets/tables
+    logging.info("creating datasets")
+    print("Creating datasets...")
     if dataload == "ingest" or dataload == "link":
         # copy dataset data
         logging.info("copying dataset data")
-        _visit_in_parallell(object_copy_helper)
+        _visit_in_parallell(object_copy_helper, total=total_datasets, desc="Copying dataset")
     else:
         logging.info("skipping dataset data copy (dataload is None)")
 
@@ -1939,3 +1980,39 @@ def load_file(
 
     return 0
     # load_file
+
+def get_all_item_names(h5obj):
+    """Return a list of all item names in the HDF5 file/group."""
+    names = []
+    def collect_names(name, obj):
+        names.append(name)
+    h5obj.visititems(collect_names)
+    return names
+
+def get_all_attribute_pairs(h5obj):
+    """Return a list of (object_name, attribute_name) for all attributes in the file/group."""
+    pairs = []
+    def collect_attrs(name, obj):
+        for attr in obj.attrs:
+            pairs.append((name, attr))
+    h5obj.visititems(collect_attrs)
+    return pairs
+
+def get_all_link_names(h5obj):
+    """Return a list of (group_name, link_name) for all links in all groups."""
+    links = []
+    def collect_links(name, obj):
+        if obj.__class__.__name__ == "Group":
+            for link_name in obj:
+                links.append((name, link_name))
+    h5obj.visititems(collect_links)
+    return links
+
+def get_all_dataset_names(h5obj):
+    """Return a list of all dataset/table names in the file/group."""
+    datasets = []
+    def collect_datasets(name, obj):
+        if obj.__class__.__name__ in ("Dataset", "Table"):
+            datasets.append(name)
+    h5obj.visititems(collect_datasets)
+    return datasets

@@ -337,6 +337,7 @@ def main():
                 end_time = time.time()
                 elapsed_time = end_time - start_time
                 logging.info(f"load_file completed in {elapsed_time:.2f} seconds")
+                print(f"load_file complete")
                 print(f"load_file completed in {elapsed_time:.2f} seconds")
 
             msg = f"File {src_file} uploaded to domain: {tgt}"

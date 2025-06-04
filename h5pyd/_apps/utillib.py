@@ -17,7 +17,9 @@ import concurrent.futures
 try:
     import h5py
     import h5pyd
+    from h5pyd import File, Group, Dataset, Empty
     import numpy as np
+    from datetime import datetime
 except ImportError as e:
     sys.stderr.write(f"ERROR : {e} : install it to use this utility...")
     sys.exit(1)
@@ -1787,8 +1789,8 @@ def load_h5image(
 
 # ---------------------------------------------------------------------------------
 def load_file(
-    fin,
-    fout,
+    fin: "File",
+    fout: "File",
     verbose=False,
     dataload="ingest",
     s3path=None,
@@ -1904,30 +1906,61 @@ def load_file(
                     logging.exception(e)
                     raise
 
+    def _create_outputdeck_parallel():
+        """
+        Create the root OutputDeck group and its subsystem groups sequentially,
+        then parallelize the creation of each subsystem's subtree.
+        """
+        outputdeck: Group = fin["OutputDeck"]  # type: ignore
+        object_create_helper(outputdeck.name, outputdeck)
+        subsystem_names = list(outputdeck.keys())
+
+        # Function to create all objects under a subsystem in parallel
+        def create_subsystem_tree(subsystem_name):
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            print(f"[{now}] Creating subsystem: {subsystem_name}")
+            subsystem = outputdeck[subsystem_name]
+            object_create_helper(subsystem.name, subsystem)
+            subsystem.visititems(object_create_helper)  # type: ignore
+            end = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            print(f"[{end}] Created subsystem: {subsystem_name}")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=thread_count) as executor:
+            futures = [executor.submit(create_subsystem_tree, name) for name in subsystem_names]
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    logging.exception(e)
+                    raise
+
+    def _create_inputdeck():
+        """
+        Create the root Inputdeck group and its subtree sequentially.
+        """
+        inputdeck = fin["InputDeck"]  # type: ignore
+        object_create_helper(inputdeck.name, inputdeck)  # type: ignore
+        # visit all items in the Inputdeck group to create objects  
+        inputdeck.visititems(object_create_helper)  # type: ignore
+    
+    
     # build a rough map of the file using the internal function above
     # copy over any attributes
     # create soft/external links (and hardlinks not already created)
     logging.info("creating target objects and attributes")
 
 
-    # Get all item names for progress reporting
-    all_names = get_all_item_names(fin)
-    total_items = len(all_names)
-    progress = {"count": 0}
-
-    def progress_wrapper(func):
-        def wrapper(name, obj):
-            progress["count"] += 1
-            percent = (progress["count"] / total_items) * 100
-            print(f"Creating objects {progress['count']}/{total_items} ({percent:.1f}%)")
-            func(name, obj)
-        return wrapper
-
     # build a rough map of the file using the internal function above
     logging.info("creating target objects")
     print("Creating objects...")
-    fin.visititems(progress_wrapper(object_create_helper))
 
+
+
+    _create_inputdeck()
+    
+    # Call the function to perform parallel creation
+    _create_outputdeck_parallel()
+    
     # get all attributes and links
     all_attrs = get_all_attribute_pairs(fin)
     total_attrs = len(all_attrs)
@@ -1935,7 +1968,6 @@ def load_file(
 
     # copy over any attributes
     logging.info("creating target attributes")
-    print
     _visit_in_parallell(copy_attribute_helper, total=total_attrs, desc="Copying attribute")
 
     # create soft/external links (and hardlinks not already created)
